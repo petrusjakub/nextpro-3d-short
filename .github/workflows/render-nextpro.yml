@@ -1,0 +1,127 @@
+---
+name: Render NextPro
+
+# Renders all 2025 frames of the NextProShort composition (67.5 s x 30 fps)
+# in 15 parallel jobs, modeled on Nbill27/3d-rendering's render-blocky-ronaldo.yml.
+# 2025 / 15 = 135, so every job renders exactly 135 frames at full 1080x1920
+# (quality upgrade over the local 540x960 render, which used --scale 0.5).
+# Each job uploads its chunk mp4 as an artifact; the artifacts are concatenated
+# and muxed with voice/narration.mp3 locally afterwards (WITHOUT -shortest),
+# exactly like the local scripts/render_v2.sh process.
+# No frames are rendered locally for this video.
+#
+# Audio: the composition contains <Audio src={staticFile("voice/narration.mp3")} />
+# but the render runs --muted (same as the local v2 render), so the mp3 is never
+# needed on the runner. The mp3 is a binary file and cannot be pushed through
+# the Muse GitHub connector; a silent placeholder is generated on the runner
+# instead so the <Audio> element never 404s. Narration is muxed in locally.
+#
+# Trigger manually from the Actions tab (workflow_dispatch).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: 0
+            start: 0
+            end: 134
+          - job: 1
+            start: 135
+            end: 269
+          - job: 2
+            start: 270
+            end: 404
+          - job: 3
+            start: 405
+            end: 539
+          - job: 4
+            start: 540
+            end: 674
+          - job: 5
+            start: 675
+            end: 809
+          - job: 6
+            start: 810
+            end: 944
+          - job: 7
+            start: 945
+            end: 1079
+          - job: 8
+            start: 1080
+            end: 1214
+          - job: 9
+            start: 1215
+            end: 1349
+          - job: 10
+            start: 1350
+            end: 1484
+          - job: 11
+            start: 1485
+            end: 1619
+          - job: 12
+            start: 1620
+            end: 1754
+          - job: 13
+            start: 1755
+            end: 1889
+          - job: 14
+            start: 1890
+            end: 2024
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install ffmpeg (needed for the silent-audio placeholder and the ffprobe verification step)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Ensure Chrome Headless Shell
+        run: npx remotion browser ensure
+
+      - name: Silent audio placeholder (narration is muxed locally afterwards; render is muted)
+        run: |
+          mkdir -p public/voice
+          ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 70 -c:a libmp3lame -q:a 4 public/voice/narration.mp3
+
+      - name: Render frames ${{ matrix.start }}-${{ matrix.end }}
+        run: >
+          npx remotion render NextProShort
+          nextpro-chunk-${{ matrix.job }}.mp4
+          --frames=${{ matrix.start }}-${{ matrix.end }}
+          --concurrency=1
+          --muted
+          --timeout=300000
+
+      - name: Verify chunk (must be exactly 135 frames, 1080x1920)
+        run: |
+          FRAMES=$(ffprobe -v error -count_frames -select_streams v:0 \
+            -show_entries stream=nb_read_frames -of csv=p=0 \
+            nextpro-chunk-${{ matrix.job }}.mp4)
+          echo "frames=$FRAMES"
+          test "$FRAMES" = "135"
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height -of csv=p=0 \
+            nextpro-chunk-${{ matrix.job }}.mp4
+
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextpro-chunk-${{ matrix.job }}
+          path: nextpro-chunk-${{ matrix.job }}.mp4
+          retention-days: 7
+---
